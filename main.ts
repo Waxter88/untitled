@@ -1,40 +1,138 @@
 //% weight=100 color=#0fbc11 icon="\uf233" block="LAN Multiplayer"
 namespace lanmultiplayer {
-    // Internal handler for received messages
+    let peerConnection: RTCPeerConnection = null;
+    let dataChannel: RTCDataChannel = null;
     let onMessageReceivedHandler: (msg: string) => void = null;
+    
+    // Variables to hold the SDP strings for manual signaling
+    let localOffer: string = "";
+    let localAnswer: string = "";
+
+    // Use a public STUN server configuration
+    const configuration: RTCConfiguration = {
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+    };
 
     /**
-     * Start a LAN multiplayer session.
-     * This function initializes the connection logic (e.g. WebRTC signaling).
+     * Client-side: Create a local SDP offer.
+     * Call this block and then use "get local offer" to retrieve the offer text.
      */
-    //% blockId=lanmultiplayer_startServer block="start LAN multiplayer server"
-    export function startServer(): void {
-        console.log("Starting LAN multiplayer server...");
-        // TODO: Initialize server or signaling mechanism here.
+    //% blockId=lanmultiplayer_createLocalOffer block="create local offer"
+    export function createLocalOffer(): void {
+        peerConnection = new RTCPeerConnection(configuration);
+        // Create a data channel for sending messages
+        dataChannel = peerConnection.createDataChannel("lanmultiplayer");
+        setupDataChannel();
+
+        // Handle ICE candidates; when ICE gathering is finished, store the local offer.
+        peerConnection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+            if (!event.candidate) { // ICE gathering complete
+                localOffer = JSON.stringify(peerConnection.localDescription);
+                console.log("Local Offer ready:", localOffer);
+            } else {
+                console.log("Client ICE candidate:", JSON.stringify(event.candidate));
+            }
+        };
+
+        peerConnection.createOffer()
+            .then((offer) => peerConnection.setLocalDescription(offer))
+            .catch((error) => console.error("Error creating offer:", error));
     }
 
     /**
-     * Connect to a LAN peer using the specified IP address.
-     * @param ip the IP address of the peer (e.g. "192.168.1.100")
+     * Get the local SDP offer string.
      */
-    //% blockId=lanmultiplayer_connectToPeer block="connect to LAN peer at IP %ip"
-    export function connectToPeer(ip: string): void {
-        console.log("Connecting to LAN peer at " + ip);
-        // TODO: Implement peer connection logic (e.g. using WebRTC signaling).
+    //% blockId=lanmultiplayer_getLocalOffer block="get local offer"
+    export function getLocalOffer(): string {
+        return localOffer;
     }
 
     /**
-     * Send a LAN message to connected peers.
+     * Client-side: Accept a remote SDP answer.
+     * Paste the answer (as text) into this block.
+     * @param sdp the remote answer SDP text
+     */
+    //% blockId=lanmultiplayer_acceptRemoteAnswer block="accept remote answer %sdp"
+    export function acceptRemoteAnswer(sdp: string): void {
+        if (!peerConnection) {
+            console.error("Peer connection not initialized");
+            return;
+        }
+        let answerDesc = new RTCSessionDescription(JSON.parse(sdp));
+        peerConnection.setRemoteDescription(answerDesc)
+            .then(() => console.log("Remote answer accepted"))
+            .catch((error) => console.error("Error setting remote answer:", error));
+    }
+
+    /**
+     * Server-side: Accept a remote SDP offer (from the client) and create an answer.
+     * Paste the client's offer (as text) into this block.
+     */
+    //% blockId=lanmultiplayer_acceptRemoteOffer block="accept remote offer %sdp and create answer"
+    export function acceptRemoteOffer(sdp: string): void {
+        peerConnection = new RTCPeerConnection(configuration);
+        // When a data channel is received, set it up.
+        peerConnection.ondatachannel = (event: RTCDataChannelEvent) => {
+            dataChannel = event.channel;
+            setupDataChannel();
+        };
+
+        peerConnection.onicecandidate = (event: RTCPeerConnectionIceEvent) => {
+            if (!event.candidate) { // ICE gathering complete
+                localAnswer = JSON.stringify(peerConnection.localDescription);
+                console.log("Local Answer ready:", localAnswer);
+            } else {
+                console.log("Server ICE candidate:", JSON.stringify(event.candidate));
+            }
+        };
+
+        let offerDesc = new RTCSessionDescription(JSON.parse(sdp));
+        peerConnection.setRemoteDescription(offerDesc)
+            .then(() => peerConnection.createAnswer())
+            .then((answer) => peerConnection.setLocalDescription(answer))
+            .catch((error) => console.error("Error processing remote offer:", error));
+    }
+
+    /**
+     * Get the local SDP answer string.
+     * Use this block to copy the answer and send it back to the client.
+     */
+    //% blockId=lanmultiplayer_getLocalAnswer block="get local answer"
+    export function getLocalAnswer(): string {
+        return localAnswer;
+    }
+
+    /**
+     * Setup data channel event handlers.
+     */
+    function setupDataChannel(): void {
+        if (dataChannel) {
+            dataChannel.onopen = () => console.log("Data channel opened.");
+            dataChannel.onmessage = (e: MessageEvent) => {
+                if (onMessageReceivedHandler) {
+                    onMessageReceivedHandler(e.data);
+                }
+            };
+            dataChannel.onerror = (error) => console.error("Data channel error:", error);
+        }
+    }
+
+    /**
+     * Send a LAN message over the established data channel.
      * @param message the message to send
      */
     //% blockId=lanmultiplayer_sendMessage block="send LAN message %message"
     export function sendMessage(message: string): void {
-        console.log("Sending LAN message: " + message);
-        // TODO: Use a data channel or appropriate API to send the message.
+        if (dataChannel && dataChannel.readyState === "open") {
+            dataChannel.send(message);
+            console.log("Sent message:", message);
+        } else {
+            console.error("Data channel is not open. Cannot send message.");
+        }
     }
 
     /**
-     * Register an event handler for when a LAN message is received.
+     * Register an event handler for received LAN messages.
      * @param handler the callback function to run when a message is received
      */
     //% blockId=lanmultiplayer_onMessageReceived block="on LAN message received"
@@ -42,8 +140,7 @@ namespace lanmultiplayer {
         onMessageReceivedHandler = handler;
     }
 
-    // A helper function to simulate an incoming message.
-    // This is for testing purposes in the simulator.
+    // Helper function to simulate receiving a message (for testing).
     export function simulateIncomingMessage(message: string): void {
         if (onMessageReceivedHandler) {
             onMessageReceivedHandler(message);
